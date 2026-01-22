@@ -1,0 +1,89 @@
+name: Deploy Application
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  # 1. Lookup Resources (Dynamic Configuration)
+  lookup:
+    name: Lookup Resources
+    runs-on: ubuntu-latest
+    outputs:
+      ecr_repository: ${{ steps.find.outputs.ecr_repository }}
+      ec2_instance_id: ${{ steps.find.outputs.ec2_instance_id }}
+      aws_region: ${{ steps.find.outputs.aws_region }}
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Find Resources by Tag
+        id: find
+        run: |
+          PROJECT_TAG="${{ vars.PROJECT_NAME || 'flask-challenge' }}"
+          REGION="${{ vars.AWS_REGION || 'us-east-1' }}"
+          echo "aws_region=$REGION" >> $GITHUB_OUTPUT
+          
+          echo "🔍 Looking for resources with tag Project=$PROJECT_TAG in $REGION..."
+
+          # 1. Find Running EC2 Instance
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Project,Values=$PROJECT_TAG" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+          
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "❌ Could not find a running EC2 instance with tag Project=$PROJECT_TAG"
+            exit 1
+          fi
+          echo "✅ Found Instance ID: $INSTANCE_ID"
+          echo "ec2_instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+          # 2. Find ECR Repository Name
+          # Try to find via Resource Tagging API
+          REPO_ARN=$(aws resourcegroupstaggingapi get-resources \
+            --tag-filters Key=Project,Values=$PROJECT_TAG \
+            --resource-type-filters ecr:repository \
+            --query "ResourceTagMappingList[0].ResourceARN" \
+            --output text)
+
+          if [ "$REPO_ARN" == "None" ] || [ -z "$REPO_ARN" ]; then
+             echo "⚠️ Could not find ECR repo via tags. Falling back to default name: $PROJECT_TAG"
+             REPO_NAME="$PROJECT_TAG"
+          else
+             # Extract name from ARN (everything after 'repository/')
+             REPO_NAME=$(echo $REPO_ARN | sed 's/.*repository\///')
+             echo "✅ Found ECR Repo: $REPO_NAME"
+          fi
+          echo "ecr_repository=$REPO_NAME" >> $GITHUB_OUTPUT
+
+  # 2. Build and Push to ECR
+  build-push:
+    name: Build & Push
+    needs: lookup
+    uses: the-tech-challenge/github-actions-library/.github/workflows/docker-ecr.yml@main
+    with:
+      ecr_repository: ${{ needs.lookup.outputs.ecr_repository }}
+      image_tag: ${{ github.sha }}
+      aws_region: ${{ needs.lookup.outputs.aws_region }}
+    secrets:
+      ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_ARN }}
+  
+  # 3. Deploy to EC2
+  deploy:
+    name: Deploy to EC2
+    needs: [lookup, build-push]
+    environment: production
+    uses: the-tech-challenge/github-actions-library/.github/workflows/deploy-ec2.yml@main
+    with:
+      image_uri: ${{ needs.build-push.outputs.image_uri }}
+      instance_id: ${{ needs.lookup.outputs.ec2_instance_id }}
+      container_port: 5000
+      aws_region: ${{ needs.lookup.outputs.aws_region }}
+    secrets:
+      ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_ARN }}
