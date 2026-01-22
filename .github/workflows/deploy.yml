@@ -14,6 +14,7 @@ jobs:
     outputs:
       ecr_repository: ${{ steps.find.outputs.ecr_repository }}
       ec2_instance_id: ${{ steps.find.outputs.ec2_instance_id }}
+      alb_dns: ${{ steps.find.outputs.alb_dns }}
       aws_region: ${{ steps.find.outputs.aws_region }}
     steps:
       - name: Configure AWS Credentials
@@ -62,6 +63,19 @@ jobs:
           fi
           echo "ecr_repository=$REPO_NAME" >> $GITHUB_OUTPUT
 
+          # 3. Find ALB DNS Name
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?contains(LoadBalancerName, '$PROJECT_TAG')].DNSName | [0]" \
+            --output text)
+          
+          if [ "$ALB_DNS" == "None" ] || [ -z "$ALB_DNS" ]; then
+             echo "⚠️ Could not find ALB with name containing $PROJECT_TAG"
+             ALB_DNS="Unknown"
+          else
+             echo "✅ Found ALB DNS: $ALB_DNS"
+          fi
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+
   # 2. Build and Push to ECR
   build-push:
     name: Build & Push
@@ -96,3 +110,35 @@ jobs:
       aws_region: ${{ needs.lookup.outputs.aws_region }}
     secrets:
       ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_ARN }}
+
+  # 5. Output URL
+  show-url:
+    name: Application URL
+    needs: [lookup, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify and Display Deployment
+        run: |
+          DNS="${{ needs.lookup.outputs.alb_dns }}"
+          URL="http://$DNS/info"
+          
+          echo "::notice title=Deployment Complete::Application is live at $URL"
+          echo "---------------------------------------------------"
+          echo "🚀 Checking endpoint health..."
+          
+          # Retry curl a few times to allow for propagation/startup
+          for i in {1..5}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "failed")
+            if [ "$HTTP_CODE" == "200" ]; then
+              echo "✅ verification successful! Site is UP."
+              curl -s "$URL" # Show the actual output
+              break
+            else
+              echo "⚠️ Attempt $i: Site returned $HTTP_CODE. Retrying in 5s..."
+              sleep 5
+            fi
+          done
+          
+          echo "---------------------------------------------------"
+          echo "🔗 Access URL: $URL"
+          echo "---------------------------------------------------"
