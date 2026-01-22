@@ -74,12 +74,21 @@ jobs:
     secrets:
       ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_ARN }}
   
-  # 3. Deploy to EC2
+  # 3. Manual Approval Gate
+  approve-deploy:
+    name: Approve Deployment
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Acknowledge Approval
+        run: echo "Manual approval received. Proceeding to deploy."
+
+  # 4. Deploy to EC2
   deploy:
     name: Deploy to EC2
-    needs: [lookup, build-push]
+    needs: [lookup, approve-deploy]
     uses: the-tech-challenge/github-actions-library/.github/workflows/deploy-ec2.yml@main
-    environment: production
     with:
       image_uri: ${{ needs.build-push.outputs.image_uri }}
       instance_id: ${{ needs.lookup.outputs.ec2_instance_id }}
