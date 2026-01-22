@@ -78,8 +78,8 @@ jobs:
   deploy:
     name: Deploy to EC2
     needs: [lookup, build-push]
-    environment: production
     uses: the-tech-challenge/github-actions-library/.github/workflows/deploy-ec2.yml@main
+    environment: production
     with:
       image_uri: ${{ needs.build-push.outputs.image_uri }}
       instance_id: ${{ needs.lookup.outputs.ec2_instance_id }}
