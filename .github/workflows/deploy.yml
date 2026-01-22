@@ -87,7 +87,7 @@ jobs:
   # 4. Deploy to EC2
   deploy:
     name: Deploy to EC2
-    needs: [lookup, approve-deploy]
+    needs: [lookup, build-push, approve-deploy]
     uses: the-tech-challenge/github-actions-library/.github/workflows/deploy-ec2.yml@main
     with:
       image_uri: ${{ needs.build-push.outputs.image_uri }}
